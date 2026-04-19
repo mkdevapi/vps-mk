@@ -1,16 +1,16 @@
 # Single‑file Dockerfile for Render: Debian 12 + XFCE + noVNC + Terminal + Keep‑alive
 FROM debian:12
 
-# Prevent interactive prompts during package installation
+# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install all required packages
+# Install all required packages (using TightVNC instead of TigerVNC)
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
         # XFCE Desktop
         xfce4 xfce4-goodies \
-        # VNC Server
-        tigervnc-standalone-server tigervnc-common \
+        # TightVNC Server (includes vncpasswd)
+        tightvncserver \
         # noVNC (web VNC client) and websockify
         novnc websockify \
         # Web‑based terminal with command history
@@ -41,7 +41,7 @@ ENV VNCPWD=vncpasswd \
     VNCDISPLAY=1280x720 \
     VNCDEPTH=24
 
-# Create VNC password file and xstartup script
+# Create VNC password file and xstartup script (vncpasswd is now available)
 RUN mkdir -p .vnc && \
     echo "${VNCPWD}" | vncpasswd -f > .vnc/passwd && \
     chmod 600 .vnc/passwd && \
@@ -77,7 +77,7 @@ logfile=/var/log/supervisor/supervisord.log\n\
 pidfile=/var/run/supervisord.pid\n\
 \n\
 [program:vnc]\n\
-command=/bin/bash -c "su - vncuser -c '"'"'vncserver :1 -rfbport 5901 -geometry 1280x720 -depth 24 -localhost no'"'"'"\n\
+command=/bin/bash -c "su - vncuser -c '\''vncserver :1 -geometry 1280x720 -depth 24 -localhost no'\''"\n\
 autostart=true\n\
 autorestart=true\n\
 stdout_logfile=/dev/stdout\n\
@@ -108,6 +108,15 @@ command=/home/vncuser/scripts/keepalive.sh\n\
 autostart=true\n\
 autorestart=true\n\
 stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0' > /etc/supervisor/conf.d/supervisord.conf
+
+# Expose ports (informational)
+EXPOSE 5901 6080 4200
+
+# Start supervisor (it runs in the foreground, keeping container alive)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]stdout_logfile=/dev/stdout\n\
 stdout_logfile_maxbytes=0\n\
 stderr_logfile=/dev/stderr\n\
 stderr_logfile_maxbytes=0' > /etc/supervisor/conf.d/supervisord.conf
