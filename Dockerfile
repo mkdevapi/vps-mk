@@ -1,170 +1,119 @@
-FROM debian:12-slim
+# Single‑file Dockerfile for Render: Debian 12 + XFCE + noVNC + Terminal + Keep‑alive
+FROM debian:12
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    DISPLAY=:1 \
-    VNC_PORT=5901 \
-    NOVNC_PORT=6080 \
-    WEB_PORT=8080 \
-    RESOLUTION=1280x720 \
-    VNC_PASSWORD=vncpass123 \
-    USER=vncuser
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Update and install minimal required packages (much lighter)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    xfce4 xfce4-terminal \
-    tigervnc-standalone-server tigervnc-common \
-    novnc websockify \
-    x11-utils dbus-x11 \
-    curl wget git htop nano sudo \
-    python3 python3-pip \
-    snapd \
-    supervisor \
-    && rm -rf /var/lib/apt/lists/* && apt-get clean
+# Install all required packages
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        # XFCE Desktop
+        xfce4 xfce4-goodies \
+        # VNC Server
+        tigervnc-standalone-server tigervnc-common \
+        # noVNC (web VNC client) and websockify
+        novnc websockify \
+        # Web‑based terminal with command history
+        shellinabox \
+        # Supervisor to manage multiple processes
+        supervisor \
+        # Keep‑alive utilities
+        curl cron \
+        # Additional tools
+        sudo wget git vim htop net-tools dbus-x11 x11-utils \
+        python3 python3-pip xfce4-terminal xfce4-taskmanager \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install ttyd via snap (most reliable method on Debian 12)
-RUN systemctl enable --now snapd.socket && \
-    snap install ttyd --classic || echo "ttyd snap install attempted"
+# Set xfce4‑terminal as the default terminal emulator
+RUN update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper
 
-# Create user
-RUN useradd -m -s /bin/bash $USER && \
-    echo "$USER ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
-    mkdir -p /home/$USER/.vnc /home/$USER/.config/xfce4
+# Create a non‑root user with sudo privileges
+RUN useradd -m -s /bin/bash vncuser && \
+    echo "vncuser:changeme" | chpasswd && \
+    usermod -aG sudo vncuser
 
-USER $USER
-WORKDIR /home/$USER
+# ------------------ VNC Setup (as vncuser) ------------------
+USER vncuser
+WORKDIR /home/vncuser
 
-# VNC password
-RUN echo "$VNC_PASSWORD" | vncpasswd -f > \~/.vnc/passwd && chmod 600 \~/.vnc/passwd
+# Hard‑coded VNC settings (no env vars needed)
+ENV VNCPWD=vncpasswd \
+    VNCDISPLAY=1280x720 \
+    VNCDEPTH=24
 
-# Proper xstartup for XFCE (fixes common Debian 12 VNC black screen issues)
-COPY <<'EOF' \~/.vnc/xstartup
-#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-[ -x /etc/vnc/xstartup ] && exec /etc/vnc/xstartup
-[ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources
-vncconfig -iconic &
-startxfce4 &
-EOF
+# Create VNC password file and xstartup script
+RUN mkdir -p .vnc && \
+    echo "${VNCPWD}" | vncpasswd -f > .vnc/passwd && \
+    chmod 600 .vnc/passwd && \
+    echo '#!/bin/sh\n\
+xrdb $HOME/.Xresources\n\
+xsetroot -solid grey\n\
+export XKL_XMODMAP_DISABLE=1\n\
+/etc/X11/Xsession\n\
+startxfce4 &\n' > .vnc/xstartup && \
+    chmod +x .vnc/xstartup
 
-RUN chmod +x \~/.vnc/xstartup
+# Keep‑alive script: pings the two Render URLs every 10 minutes
+RUN mkdir -p scripts && \
+    echo '#!/bin/bash\n\
+while true; do\n\
+    echo "$(date): Pinging keep‑alive URLs..."\n\
+    curl -s -o /dev/null -w "%{http_code}" https://vps-ppsd.onrender.com/ || echo "Failed"\n\
+    curl -s -o /dev/null -w "%{http_code}" https://vps-mk.onrender.com/ || echo "Failed"\n\
+    sleep 600\n\
+done' > scripts/keepalive.sh && \
+    chmod +x scripts/keepalive.sh
 
-# Supervisor configuration
-COPY <<EOF /home/$USER/supervisord.conf
-[supervisord]
-nodaemon=true
-logfile=/dev/stdout
-logfile_maxbytes=0
+# Switch back to root for supervisor configuration
+USER root
 
-[program:xvfb]
-command=Xvfb :1 -screen 0 ${RESOLUTION}x24 -ac
-autorestart=true
+# ------------------ Supervisor Configuration ------------------
+# Write supervisor config file directly inside the container
+RUN mkdir -p /var/log/supervisor && \
+    echo '[supervisord]\n\
+nodaemon=true\n\
+user=root\n\
+logfile=/var/log/supervisor/supervisord.log\n\
+pidfile=/var/run/supervisord.pid\n\
+\n\
+[program:vnc]\n\
+command=/bin/bash -c "su - vncuser -c '"'"'vncserver :1 -rfbport 5901 -geometry 1280x720 -depth 24 -localhost no'"'"'"\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0\n\
+\n\
+[program:websockify]\n\
+command=/bin/bash -c "websockify --web=/usr/share/novnc ${PORT:-6080} localhost:5901"\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0\n\
+\n\
+[program:shellinabox]\n\
+command=/bin/bash -c "shellinaboxd -t -s /:LOGIN -p 4200 --no-beep"\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0\n\
+\n\
+[program:keepalive]\n\
+command=/home/vncuser/scripts/keepalive.sh\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0' > /etc/supervisor/conf.d/supervisord.conf
 
-[program:vncserver]
-command=vncserver :1 -geometry ${RESOLUTION} -depth 24 -SecurityTypes None -localhost no
-autorestart=true
-environment=HOME="/home/vncuser",USER="vncuser"
+# Expose ports (informational)
+EXPOSE 5901 6080 4200
 
-[program:websockify]
-command=websockify --web=/usr/share/novnc \( {NOVNC_PORT} localhost: \){VNC_PORT}
-autorestart=true
-
-[program:ttyd]
-command=/snap/bin/ttyd -p 7681 -i 0.0.0.0 /bin/bash
-autorestart=true
-
-[program:keepalive]
-command=bash -c 'while true; do curl -fsS -o /dev/null http://localhost:${WEB_PORT}/ping || true; sleep 240; done'
-autorestart=true
-EOF
-
-# Simple status + keepalive server
-COPY <<EOF /home/$USER/keepalive_server.py
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading, time
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/ping':
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(f'''
-            <h1>VPS Ready on Render</h1>
-            <p><a href="/vnc.html" target="_blank">→ Open Desktop (noVNC)</a></p>
-            <p><a href="/terminal" target="_blank">→ Open Web Terminal</a></p>
-            <p>Keep-alive active | Password: {__import__('os').environ.get('VNC_PASSWORD', 'vncpass123')}</p>
-            '''.encode())
-
-if __name__ == "__main__":
-    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', 8080), Handler).serve_forever(), daemon=True).start()
-    while True: time.sleep(60)
-EOF
-
-# Entrypoint
-COPY <<'EOF' /home/$USER/entrypoint.sh
-#!/bin/bash
-set -e
-
-echo "Starting services..."
-
-# Start supervisor (XVFB + VNC + websockify + ttyd + keepalive)
-supervisord -c /home/$USER/supervisord.conf &
-
-# Start keepalive + status page
-python3 /home/$USER/keepalive_server.py &
-
-echo "=================================================="
-echo "✅ Container is ready!"
-echo "🌐 Desktop:   https://YOUR-APP.onrender.com/vnc.html"
-echo "🖥️  Terminal: https://YOUR-APP.onrender.com/terminal"
-echo "🔄 Keep-alive running"
-echo "VNC Password: $VNC_PASSWORD"
-echo "=================================================="
-
-tail -f /dev/null
-EOF
-
-RUN chmod +x /home/$USER/entrypoint.sh
-
-EXPOSE 8080
-
-ENTRYPOINT ["/home/$USER/entrypoint.sh"]    threading.Thread(target=run_server, daemon=True).start()
-    # Keep main thread alive for supervisor
-    while True:
-        time.sleep(60)
-EOF
-
-# Expose port for Render (Web Service)
-EXPOSE 8080
-
-# Entrypoint script
-COPY <<EOF /home/$USER/entrypoint.sh
-#!/bin/bash
-set -e
-
-# Start Xvfb + VNC + services via supervisor
-supervisord -c /home/$USER/supervisord.conf &
-
-# Start keep-alive Python server in background
-python3 /home/$USER/keepalive_server.py &
-
-echo "=================================================="
-echo "✅ Setup complete!"
-echo "🌐 Access Desktop: http://YOUR-RENDER-URL/vnc.html"
-echo "🖥️  Access Terminal: http://YOUR-RENDER-URL/terminal  (or directly :7681 if exposed)"
-echo "🔄 Keep-alive ping running every 5 min"
-echo "Password for VNC: $VNC_PASSWORD"
-echo "=================================================="
-
-# Keep container running
-tail -f /dev/null
-EOF
-
-RUN chmod +x /home/$USER/entrypoint.sh
-
-ENTRYPOINT ["/home/$USER/entrypoint.sh"]
+# Start supervisor (it runs in the foreground, keeping container alive)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
