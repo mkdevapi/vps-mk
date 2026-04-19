@@ -1,41 +1,53 @@
-FROM debian:bookworm-slim
+FROM ubuntu:22.04
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV DISPLAY=:1
-ENV VNC_PORT=5901
-ENV NOVNC_PORT=6080
+ENV DEBIAN_FRONTEND=noninteractive \
+    DISPLAY=:1 \
+    VNC_PORT=5901 \
+    NOVNC_PORT=6080 \
+    VNC_PW=vncpassword
 
-# Install XFCE + VNC + noVNC dependencies
-RUN apt-get update && apt-get install -y \
-    xfce4 xfce4-goodies \
-    tigervnc-standalone-server tigervnc-common \
-    novnc websockify \
-    dbus-x11 x11-xserver-utils \
-    wget curl git nano bash \
-    python3 \
-    && apt-get clean
+# Install XFCE, VNC, noVNC, Firefox, and Supervisor
+RUN apt-get update && \
+    apt-get install -y \
+        xfce4 \
+        xfce4-goodies \
+        tightvncserver \
+        novnc \
+        websockify \
+        firefox \
+        dbus-x11 \
+        supervisor \
+        wget \
+        net-tools && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Setup VNC password
+# Set VNC password and create startup script
 RUN mkdir -p /root/.vnc && \
-    echo "123456" | vncpasswd -f > /root/.vnc/passwd && \
-    chmod 600 /root/.vnc/passwd
-
-# Create startup script
-RUN echo '#!/bin/bash\n\
+    echo "$VNC_PW" | vncpasswd -f > /root/.vnc/passwd && \
+    chmod 600 /root/.vnc/passwd && \
+    echo '#!/bin/bash\n\
 xrdb $HOME/.Xresources\n\
-startxfce4 &' > /root/.vnc/xstartup && chmod +x /root/.vnc/xstartup
+startxfce4 &' > /root/.vnc/xstartup && \
+    chmod +x /root/.vnc/xstartup
 
-# noVNC setup
-RUN mkdir -p /opt/novnc/utils/websockify && \
-    ln -s /usr/share/novnc/* /opt/novnc/ && \
-    ln -s /usr/share/websockify /opt/novnc/utils/websockify
-
-# Start script
-RUN echo '#!/bin/bash\n\
-vncserver :1 -geometry 1280x720 -depth 24\n\
-websockify --web=/opt/novnc/ 0.0.0.0:6080 localhost:5901' > /start.sh && \
-chmod +x /start.sh
+# Create Supervisor config inline
+RUN mkdir -p /etc/supervisor/conf.d/ && \
+    echo '[supervisord]' > /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'nodaemon=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'user=root' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '[program:vnc]' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'command=bash -c "vncserver :1 -geometry 1280x720 -depth 24 && tail -f /root/.vnc/*.log"' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'autorestart=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'priority=10' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '[program:novnc]' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'command=bash -c "/usr/share/novnc/utils/launch.sh --vnc localhost:5901 --listen 6080"' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'autorestart=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'priority=20' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'startretries=3' >> /etc/supervisor/conf.d/supervisord.conf
 
 EXPOSE 6080
 
-CMD ["/start.sh"]
+CMD ["/usr/bin/supervisord"]
