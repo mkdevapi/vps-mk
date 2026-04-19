@@ -1,58 +1,41 @@
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV DISPLAY=:1
+ENV VNC_PORT=5901
+ENV NOVNC_PORT=6080
 
-# Install base + build tools
+# Install XFCE + VNC + noVNC dependencies
 RUN apt-get update && apt-get install -y \
     xfce4 xfce4-goodies \
-    tigervnc-standalone-server \
+    tigervnc-standalone-server tigervnc-common \
     novnc websockify \
     dbus-x11 x11-xserver-utils \
-    curl wget git bash nano neofetch \
-    build-essential cmake libjson-c-dev libwebsockets-dev \
+    wget curl git nano bash \
+    python3 \
     && apt-get clean
 
-# 🔥 Install ttyd manually (FIX)
-RUN git clone https://github.com/tsl0922/ttyd.git /opt/ttyd && \
-    cd /opt/ttyd && \
-    mkdir build && cd build && \
-    cmake .. && make && make install
-
-# VNC password
+# Setup VNC password
 RUN mkdir -p /root/.vnc && \
     echo "123456" | vncpasswd -f > /root/.vnc/passwd && \
     chmod 600 /root/.vnc/passwd
 
-# XFCE startup
-RUN echo '#!/bin/bash\nstartxfce4 &' > /root/.vnc/xstartup && \
-    chmod +x /root/.vnc/xstartup
-
-# noVNC fix
-RUN git clone https://github.com/novnc/noVNC.git /opt/noVNC && \
-    git clone https://github.com/novnc/websockify /opt/noVNC/utils/websockify
-
-# Entrypoint
+# Create startup script
 RUN echo '#!/bin/bash\n\
-PORT=${PORT:-10000}\n\
-echo "Running on port $PORT"\n\
-\n\
-# Start VNC\n\
-vncserver :1 -geometry 1280x720 -depth 24\n\
-\n\
-# Terminal\n\
-ttyd -p 7681 bash &\n\
-\n\
-# Keepalive\n\
-(while true; do\n\
-  curl -s https://vps-ppsd.onrender.com/ > /dev/null\n\
-  curl -s https://vps-mk.onrender.com/ > /dev/null\n\
-  sleep 300\n\
-done) &\n\
-\n\
-# Start noVNC\n\
-/opt/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen $PORT\n\
-' > /start.sh && chmod +x /start.sh
+xrdb $HOME/.Xresources\n\
+startxfce4 &' > /root/.vnc/xstartup && chmod +x /root/.vnc/xstartup
 
-EXPOSE 10000
+# noVNC setup
+RUN mkdir -p /opt/novnc/utils/websockify && \
+    ln -s /usr/share/novnc/* /opt/novnc/ && \
+    ln -s /usr/share/websockify /opt/novnc/utils/websockify
+
+# Start script
+RUN echo '#!/bin/bash\n\
+vncserver :1 -geometry 1280x720 -depth 24\n\
+websockify --web=/opt/novnc/ 0.0.0.0:6080 localhost:5901' > /start.sh && \
+chmod +x /start.sh
+
+EXPOSE 6080
 
 CMD ["/start.sh"]
