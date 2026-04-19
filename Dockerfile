@@ -1,26 +1,46 @@
-FROM debian:bookworm-slim
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DISPLAY=:1
+ENV VNC_PORT=5901
+ENV NOVNC_PORT=8080
 
+# Install XFCE + VNC + noVNC
 RUN apt-get update && apt-get install -y \
     xfce4 xfce4-goodies \
     tigervnc-standalone-server tigervnc-common \
     dbus-x11 x11-xserver-utils \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    novnc websockify \
+    supervisor \
+    wget curl git nano \
+    fonts-dejavu \
+    && apt-get clean
 
-# VNC setup
+# Create VNC directory
 RUN mkdir -p /root/.vnc
 
-# Password
+# Set VNC password
 RUN echo "123456" | vncpasswd -f > /root/.vnc/passwd && chmod 600 /root/.vnc/passwd
 
-# FIXED xstartup (this is the main fix)
+# Create xstartup
 RUN echo '#!/bin/bash\n\
-unset SESSION_MANAGER\n\
-unset DBUS_SESSION_BUS_ADDRESS\n\
+xrdb $HOME/.Xresources\n\
 startxfce4 &' > /root/.vnc/xstartup && chmod +x /root/.vnc/xstartup
 
-EXPOSE 5901
+# Supervisor config
+RUN mkdir -p /etc/supervisor/conf.d
 
-CMD ["bash", "-c", "vncserver :1 -geometry 1280x800 -depth 24 && tail -f /root/.vnc/*.log"]
+RUN echo "[supervisord]\n\
+nodaemon=true\n\
+\n\
+[program:vnc]\n\
+command=/usr/bin/vncserver :1 -geometry 1280x720 -depth 24\n\
+autorestart=true\n\
+\n\
+[program:novnc]\n\
+command=/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen 8080\n\
+autorestart=true\n" > /etc/supervisor/conf.d/supervisord.conf
+
+EXPOSE 8080
+
+CMD ["/usr/bin/supervisord"]
